@@ -1,6 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
 import { getAuth, signInWithEmailAndPassword, signOut, setPersistence, browserSessionPersistence } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-import { getDatabase, ref, onValue, get, set, push, remove, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+import { getDatabase, ref, onValue, get, set, push, remove, serverTimestamp, runTransaction } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 import { APP_CONFIG, PASS_TYPES, applyBranding } from "./config.js";
 
 // 1. Initialize Firebase App, Auth, and Database
@@ -541,25 +541,55 @@ setPersistence(auth, browserSessionPersistence)
           clearIdField();
         } else {
           // --- PHONE CHECK-IN LOGIC ---
+          // Uses a Firebase transaction instead of a plain set() - this
+          // matters specifically because multiple physical kiosks can now
+          // be checking students into the SAME room's pockets at once. A
+          // plain read-then-write has a real gap: two kiosks could both
+          // read "pocket 3 is free" before either has written anything,
+          // and both would then successfully write pocket 3 for two
+          // different students, since active_phones_in_class is keyed by
+          // student ID, not by pocket number - nothing else was stopping
+          // that collision. A transaction re-runs against the server's
+          // freshest data if another write snuck in first, so the lowest
+          // free pocket gets computed and claimed as one atomic step -
+          // two simultaneous students can never be handed the same one.
           if (!selectedPocket) {
             return showOverlay('ERROR', 'No pocket selected. (All full?)', 'error');
           }
-          
-          const pocketToUse = selectedPocket;
 
-          await set(phoneRef, {
-            studentName: fullName,
-            firstName: studentData.firstName,
-            lastName: studentData.lastName,
-            pocket: pocketToUse,
-            timestamp: serverTimestamp()
+          let assignedPocket = null;
+          const allPhonesRef = ref(db, 'active_phones_in_class');
+
+          const txResult = await runTransaction(allPhonesRef, (currentPhones) => {
+            currentPhones = currentPhones || {};
+            const occupied = new Set(Object.values(currentPhones).map(p => p.pocket));
+            let freePocket = null;
+            for (let i = 1; i <= APP_CONFIG.pocketsAvailable; i++) {
+              if (!occupied.has(i)) { freePocket = i; break; }
+            }
+            if (freePocket === null) {
+              return; // abort - genuinely no pockets left, don't commit anything
+            }
+            assignedPocket = freePocket;
+            currentPhones[studentId] = {
+              studentName: fullName,
+              firstName: studentData.firstName,
+              lastName: studentData.lastName,
+              pocket: freePocket,
+              timestamp: Date.now() // not serverTimestamp() - that sentinel isn't reliable inside a transaction callback, which can run more than once before committing
+            };
+            return currentPhones;
           });
+
+          if (!txResult.committed || assignedPocket === null) {
+            return showOverlay('KIOSK FULL', 'No pockets are currently available. Please tell your teacher.', 'error');
+          }
 
           await set(push(ref(db, 'system_logs')), {
-            studentId, name: fullName, type: 'Phone', details: `CI-${pocketToUse}`, timestamp: serverTimestamp(), duration: '--'
+            studentId, name: fullName, type: 'Phone', details: `CI-${assignedPocket}`, timestamp: serverTimestamp(), duration: '--'
           });
 
-          showOverlay(`PHONE STORED`, `${studentData.firstName} secured phone in pocket ${pocketToUse}`, 'success');
+          showOverlay(`PHONE STORED`, `${studentData.firstName} secured phone in pocket ${assignedPocket}`, 'success');
           clearIdField();
         }
       }
