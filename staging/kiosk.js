@@ -276,6 +276,20 @@ setPersistence(auth, browserSessionPersistence)
     }
 
     function autoSelectLowestPocket() {
+      // If a pocket is already selected and it's STILL free, leave it
+      // alone entirely - don't touch it just because this function got
+      // called again. With multiple kiosks now active in the same room,
+      // ANY other kiosk's check-in/out fires this listener here too, and
+      // re-picking "the lowest available" on every single one of those
+      // unrelated events was silently overwriting a student's own
+      // in-progress selection before they'd even hit submit. Only
+      // actually reselect when there's nothing selected yet, or when the
+      // specific pocket they had picked was genuinely just taken by
+      // someone else in the meantime.
+      if (selectedPocket !== null && !occupiedPockets.includes(selectedPocket.toString().padStart(2, '0'))) {
+        return;
+      }
+
       for (let i = 1; i <= APP_CONFIG.pocketsAvailable; i++) {
         if (!occupiedPockets.includes(i.toString().padStart(2, '0'))) {
           setPocketActive(i);
@@ -564,13 +578,19 @@ setPersistence(auth, browserSessionPersistence)
             return showOverlay('ERROR', 'No pocket selected. (All full?)', 'error');
           }
 
-          const requestedPocket = selectedPocket;
+          const requestedPocket = selectedPocket; // already a padded string like "05", matching how it's stored everywhere else
           let assignedPocket = null;
           const allPhonesRef = ref(db, 'active_phones_in_class');
 
           const txResult = await runTransaction(allPhonesRef, (currentPhones) => {
             currentPhones = currentPhones || {};
-            const occupied = new Set(Object.values(currentPhones).map(p => p.pocket));
+            // Normalize every existing pocket value to the same padded-string
+            // format used everywhere else in this file (setPocketActive,
+            // occupiedPockets) before comparing. Without this, a pocket
+            // stored as the number 5 would never match the string "05" -
+            // exactly the kind of inconsistent, hard-to-reproduce mismatch
+            // that was causing this to behave unpredictably.
+            const occupied = new Set(Object.values(currentPhones).map(p => p.pocket.toString().padStart(2, '0')));
 
             let pocketToAssign;
             if (!occupied.has(requestedPocket)) {
@@ -583,7 +603,8 @@ setPersistence(auth, browserSessionPersistence)
               // free one instead of making the student start over.
               pocketToAssign = null;
               for (let i = 1; i <= APP_CONFIG.pocketsAvailable; i++) {
-                if (!occupied.has(i)) { pocketToAssign = i; break; }
+                const candidate = i.toString().padStart(2, '0');
+                if (!occupied.has(candidate)) { pocketToAssign = candidate; break; }
               }
               if (pocketToAssign === null) {
                 return; // abort - genuinely no pockets left anywhere
@@ -609,7 +630,7 @@ setPersistence(auth, browserSessionPersistence)
             studentId, name: fullName, type: 'Phone', details: `CI-${assignedPocket}`, timestamp: serverTimestamp(), duration: '--'
           });
 
-          showOverlay(`PHONE STORED`, `${studentData.firstName} secured phone in pocket ${assignedPocket}`, 'success');
+          showOverlay(`PHONE STORED`, `${studentData.firstName} secured phone in pocket ${parseInt(assignedPocket, 10)}`, 'success');
           clearIdField();
         }
       }
