@@ -550,32 +550,52 @@ setPersistence(auth, browserSessionPersistence)
           // different students, since active_phones_in_class is keyed by
           // student ID, not by pocket number - nothing else was stopping
           // that collision. A transaction re-runs against the server's
-          // freshest data if another write snuck in first, so the lowest
-          // free pocket gets computed and claimed as one atomic step -
-          // two simultaneous students can never be handed the same one.
+          // freshest data if another write snuck in first, so a pocket
+          // gets claimed as one atomic step - two simultaneous students
+          // can never be handed the same one.
+          //
+          // The transaction tries the student's OWN selected pocket first
+          // (whatever's highlighted on screen) - that's the normal case
+          // and should always be honored as-is. It only searches for a
+          // different pocket if that specific one was genuinely just
+          // claimed by another kiosk in the same instant - a real race,
+          // not the common case.
           if (!selectedPocket) {
             return showOverlay('ERROR', 'No pocket selected. (All full?)', 'error');
           }
 
+          const requestedPocket = selectedPocket;
           let assignedPocket = null;
           const allPhonesRef = ref(db, 'active_phones_in_class');
 
           const txResult = await runTransaction(allPhonesRef, (currentPhones) => {
             currentPhones = currentPhones || {};
             const occupied = new Set(Object.values(currentPhones).map(p => p.pocket));
-            let freePocket = null;
-            for (let i = 1; i <= APP_CONFIG.pocketsAvailable; i++) {
-              if (!occupied.has(i)) { freePocket = i; break; }
+
+            let pocketToAssign;
+            if (!occupied.has(requestedPocket)) {
+              // The student's chosen pocket is still free - use it exactly
+              // as selected. This is the normal, overwhelmingly common case.
+              pocketToAssign = requestedPocket;
+            } else {
+              // Someone else's kiosk claimed this exact pocket in the same
+              // instant - a genuine race. Fall back to the next lowest
+              // free one instead of making the student start over.
+              pocketToAssign = null;
+              for (let i = 1; i <= APP_CONFIG.pocketsAvailable; i++) {
+                if (!occupied.has(i)) { pocketToAssign = i; break; }
+              }
+              if (pocketToAssign === null) {
+                return; // abort - genuinely no pockets left anywhere
+              }
             }
-            if (freePocket === null) {
-              return; // abort - genuinely no pockets left, don't commit anything
-            }
-            assignedPocket = freePocket;
+
+            assignedPocket = pocketToAssign;
             currentPhones[studentId] = {
               studentName: fullName,
               firstName: studentData.firstName,
               lastName: studentData.lastName,
-              pocket: freePocket,
+              pocket: pocketToAssign,
               timestamp: Date.now() // not serverTimestamp() - that sentinel isn't reliable inside a transaction callback, which can run more than once before committing
             };
             return currentPhones;
