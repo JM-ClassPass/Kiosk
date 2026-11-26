@@ -122,6 +122,25 @@ let editingRows = new Set();
 let selectedRows = new Set(); // Tracks rows checked for bulk deletion
 let currentFilteredRoster = []; // Keeps track of what's currently visible
 let csvFileToImport = null;
+let groupFilterValue = ''; // '' = all groups
+
+// Optional roster groups (e.g. two class blocks). Only rooms that define
+// rosterGroups in config.js get any of the group UI below; every other room
+// sees the roster exactly as before.
+const ROSTER_GROUPS = APP_CONFIG.rosterGroups || [];
+const groupsOn = ROSTER_GROUPS.length > 0;
+const tableColCount = groupsOn ? 6 : 5;
+const groupOptionsHtml = (selected) =>
+  `<option value="">No group</option>` + ROSTER_GROUPS.map(g => `<option value="${escapeHtml(g)}"${g === selected ? ' selected' : ''}>${escapeHtml(g)}</option>`).join('');
+
+// Matches a typed/CSV group value to a configured group: exact (any case),
+// or just the number ("1" matches "Group 1"). Returns '' if nothing matches.
+function matchGroup(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (!v) return '';
+  const hit = ROSTER_GROUPS.find(g => g.toLowerCase() === v || g.toLowerCase() === `group ${v}`);
+  return hit || '';
+}
 
 // ==========================================
 // 4. UI ELEMENT REFERENCES
@@ -145,6 +164,68 @@ const csvInput = document.getElementById('csv-file-input');
 const btnBrowse = document.getElementById('btn-browse-file');
 const btnProcessImport = document.getElementById('btn-process-import');
 
+// Build the group UI once, up front (before any listeners that look for
+// .sort-header or the bulk buttons are attached).
+let groupFilterEl = null;
+let bulkGroupWrap = null;
+let bulkGroupSelect = null;
+if (groupsOn) {
+  // Column header, just before "Actions"
+  const headRow = document.querySelector('#roster-table-body')?.closest('table')?.querySelector('thead tr');
+  if (headRow) {
+    const th = document.createElement('th');
+    th.setAttribute('data-sort', 'group');
+    th.className = 'sort-header py-3 px-3 cursor-pointer select-none hover:text-[#0B4F2C]';
+    th.innerHTML = 'Group <span id="sort-icon-group" class="ml-0.5 text-slate-400">&uarr;&darr;</span>';
+    headRow.insertBefore(th, headRow.lastElementChild);
+  }
+
+  // Filter dropdown, next to the search box
+  groupFilterEl = document.createElement('select');
+  groupFilterEl.id = 'group-filter';
+  groupFilterEl.className = 'rg-select';
+  groupFilterEl.innerHTML = `<option value="">All groups</option>` + ROSTER_GROUPS.map(g => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('');
+  groupFilterEl.addEventListener('change', () => { groupFilterValue = groupFilterEl.value; renderTable(); });
+
+  // "Set group" for whatever rows are checked
+  bulkGroupWrap = document.createElement('div');
+  bulkGroupWrap.className = 'rg-bulk hidden';
+  bulkGroupSelect = document.createElement('select');
+  bulkGroupSelect.className = 'rg-select';
+  bulkGroupSelect.innerHTML = groupOptionsHtml('');
+  const bulkGroupBtn = document.createElement('button');
+  bulkGroupBtn.type = 'button';
+  bulkGroupBtn.className = 'rg-bulk-btn';
+  bulkGroupBtn.textContent = 'Set group';
+  bulkGroupBtn.addEventListener('click', async () => {
+    if (selectedRows.size === 0) return;
+    const updates = {};
+    selectedRows.forEach(id => { updates[`classroom_roster/${id}/group`] = bulkGroupSelect.value || null; });
+    try {
+      await update(ref(db), updates);
+      selectedRows.clear();
+      renderTable();
+    } catch (err) {
+      alert("Error setting group: " + err.message);
+    }
+  });
+  bulkGroupWrap.appendChild(bulkGroupSelect);
+  bulkGroupWrap.appendChild(bulkGroupBtn);
+
+  const anchor = btnBulkDelete || btnEditAll;
+  if (anchor && anchor.parentNode) {
+    anchor.parentNode.insertBefore(groupFilterEl, anchor);
+    anchor.parentNode.insertBefore(bulkGroupWrap, anchor);
+  }
+
+  // Group dropdown on the Quick Add form
+  if (formAddStudent) {
+    const wrap = document.createElement('div');
+    wrap.innerHTML = `<label class="block text-[10px] font-bold text-slate-500 uppercase mb-1">Group</label><select id="input-group" class="rg-select rg-select-full">${groupOptionsHtml('')}</select>`;
+    formAddStudent.insertBefore(wrap, formAddStudent.querySelector('button[type="submit"]'));
+  }
+}
+
 // ==========================================
 // 5. CLOCK & INITIALIZATION
 // ==========================================
@@ -161,7 +242,7 @@ onValue(rosterRef, (snapshot) => {
   if (snapshot.exists()) {
     const data = snapshot.val();
     for (const [id, info] of Object.entries(data)) {
-      rosterData.push({ id, firstName: info.firstName, lastName: info.lastName });
+      rosterData.push({ id, firstName: info.firstName, lastName: info.lastName, group: info.group || '' });
     }
   }
   
@@ -182,9 +263,11 @@ function renderTable() {
 
   // Filter
   currentFilteredRoster = rosterData.filter(s => 
-    s.id.toLowerCase().includes(searchQuery) ||
-    s.firstName.toLowerCase().includes(searchQuery) ||
-    s.lastName.toLowerCase().includes(searchQuery)
+    (!groupFilterValue || s.group === groupFilterValue) && (
+      s.id.toLowerCase().includes(searchQuery) ||
+      s.firstName.toLowerCase().includes(searchQuery) ||
+      s.lastName.toLowerCase().includes(searchQuery)
+    )
   );
 
   // Sort
@@ -207,7 +290,7 @@ function renderTable() {
   updateBulkDeleteUI();
 
   if (currentFilteredRoster.length === 0) {
-    tableBody.innerHTML = `<tr><td colspan="5" class="text-center py-6 text-slate-400">No students found.</td></tr>`;
+    tableBody.innerHTML = `<tr><td colspan="${tableColCount}" class="text-center py-6 text-slate-400">No students found.</td></tr>`;
     return;
   }
 
@@ -230,6 +313,7 @@ function renderTable() {
         <td class="py-3 px-3 border-t border-slate-100 font-mono text-slate-500">${safeId}</td>
         <td class="py-3 px-3 border-t border-slate-100"><input type="text" value="${safeFirst}" class="edit-fn w-full border border-slate-300 rounded px-2 py-1.5 text-xs font-bold text-slate-800 focus:border-[#0B4F2C] focus:outline-none" /></td>
         <td class="py-3 px-3 border-t border-slate-100"><input type="text" value="${safeLast}" class="edit-ln w-full border border-slate-300 rounded px-2 py-1.5 text-xs font-bold text-slate-800 focus:border-[#0B4F2C] focus:outline-none" /></td>
+        ${groupsOn ? `<td class="py-3 px-3 border-t border-slate-100"><select class="edit-group rg-select">${groupOptionsHtml(student.group)}</select></td>` : ''}
         <td class="py-3 px-3 border-t border-slate-100 text-right">
           <button data-id="${student.id}" class="btn-save inline-flex items-center gap-1.5 text-emerald-700 hover:text-emerald-900 bg-emerald-100 hover:bg-emerald-200 px-3 py-1.5 rounded-lg font-bold transition shadow-sm text-xs">
             <i class="fa-solid fa-check"></i> Save
@@ -242,6 +326,7 @@ function renderTable() {
         <td class="py-3 px-3 border-t border-slate-100 font-mono text-slate-500">${safeId}</td>
         <td class="py-3 px-3 border-t border-slate-100">${safeFirst}</td>
         <td class="py-3 px-3 border-t border-slate-100">${safeLast}</td>
+        ${groupsOn ? `<td class="py-3 px-3 border-t border-slate-100">${student.group ? `<span class="rg-badge">${escapeHtml(student.group)}</span>` : `<span class="text-slate-300">&mdash;</span>`}</td>` : ''}
         <td class="py-3 px-3 border-t border-slate-100 text-right space-x-1.5">
           <button data-id="${student.id}" class="btn-edit text-amber-600 hover:text-amber-700 bg-amber-50 hover:bg-amber-100 px-2.5 py-1.5 rounded-lg shadow-sm transition">
             <i class="fa-solid fa-pen"></i>
@@ -263,9 +348,11 @@ function updateBulkDeleteUI() {
     btnBulkDelete.classList.remove('hidden');
     btnBulkDelete.classList.add('inline-flex');
     bulkDeleteCount.textContent = selectedRows.size;
+    if (bulkGroupWrap) bulkGroupWrap.classList.remove('hidden');
   } else {
     btnBulkDelete.classList.add('hidden');
     btnBulkDelete.classList.remove('inline-flex');
+    if (bulkGroupWrap) bulkGroupWrap.classList.add('hidden');
   }
 }
 
@@ -293,10 +380,11 @@ if (tableBody) {
       const tr = target.closest('tr');
       const newFn = tr.querySelector('.edit-fn').value.trim();
       const newLn = tr.querySelector('.edit-ln').value.trim();
+      const groupSel = tr.querySelector('.edit-group');
       
       if(newFn && newLn) {
         try {
-          await update(ref(db, `classroom_roster/${id}`), { firstName: newFn, lastName: newLn });
+          await update(ref(db, `classroom_roster/${id}`), { firstName: newFn, lastName: newLn, ...(groupSel ? { group: groupSel.value || null } : {}) });
           editingRows.delete(id);
           renderTable(); 
         } catch (err) {
@@ -409,10 +497,12 @@ if (btnSaveAll) {
         const id = saveBtn.getAttribute('data-id');
         const fn = tr.querySelector('.edit-fn').value.trim();
         const ln = tr.querySelector('.edit-ln').value.trim();
+        const groupSel = tr.querySelector('.edit-group');
         
         if (fn && ln) {
           updates[`classroom_roster/${id}/firstName`] = fn;
           updates[`classroom_roster/${id}/lastName`] = ln;
+          if (groupSel) updates[`classroom_roster/${id}/group`] = groupSel.value || null;
         }
       }
     });
@@ -454,11 +544,13 @@ if (formAddStudent) {
     const studentId = idInput.value.trim().replace(/[^a-zA-Z0-9]/g, '');
     const firstName = fnInput.value.trim();
     const lastName = lnInput.value.trim();
+    const groupInput = document.getElementById('input-group');
+    const group = groupInput ? groupInput.value : '';
 
     if (!studentId || !firstName || !lastName) return;
 
     try {
-      await set(ref(db, `classroom_roster/${studentId}`), { firstName, lastName });
+      await set(ref(db, `classroom_roster/${studentId}`), { firstName, lastName, ...(group ? { group } : {}) });
       idInput.value = '';
       fnInput.value = '';
       lnInput.value = '';
@@ -535,6 +627,7 @@ if (btnProcessImport) {
       }
 
       let importedCount = 0;
+      let unmatchedGroups = 0;
 
       for (let i = 1; i < lines.length; i++) {
         const parts = lines[i].split(',').map(p => p.trim());
@@ -544,13 +637,22 @@ if (btnProcessImport) {
           const ln = parts[2];
           
           if (sid && fn && ln) {
-            await set(ref(db, `classroom_roster/${sid}`), { firstName: fn, lastName: ln });
+            if (groupsOn) {
+              // Optional 4th column: group. If a row has none, update only the
+              // names so a re-import never wipes groups already assigned.
+              const rawGroup = (parts[3] || '').replace(/^"|"$/g, '');
+              const group = matchGroup(rawGroup);
+              if (rawGroup && !group) unmatchedGroups++;
+              await update(ref(db, `classroom_roster/${sid}`), { firstName: fn, lastName: ln, ...(group ? { group } : {}) });
+            } else {
+              await set(ref(db, `classroom_roster/${sid}`), { firstName: fn, lastName: ln });
+            }
             importedCount++;
           }
         }
       }
       
-      alert(`Successfully processed ${importedCount} students!`);
+      alert(`Successfully processed ${importedCount} students!` + (unmatchedGroups ? `\n\n${unmatchedGroups} row(s) had a group that didn't match ${ROSTER_GROUPS.join(' / ')} and were left without a group.` : ''));
       csvFileToImport = null;
       if (dropZoneText) {
         dropZoneText.textContent = "Drag & Drop CSV File Here";
@@ -570,12 +672,14 @@ if (btnExport) {
   btnExport.addEventListener('click', () => {
     if (rosterData.length === 0) return alert("Roster is empty.");
     
-    let csvContent = "ID,First Name,Last Name\n";
+    let csvContent = groupsOn ? "ID,First Name,Last Name,Group\n" : "ID,First Name,Last Name\n";
     
     const exportData = [...rosterData].sort((a, b) => a.lastName.localeCompare(b.lastName));
     
     exportData.forEach(s => {
-      csvContent += `"${s.id}","${s.firstName}","${s.lastName}"\n`;
+      csvContent += groupsOn
+        ? `"${s.id}","${s.firstName}","${s.lastName}","${s.group || ''}"\n`
+        : `"${s.id}","${s.firstName}","${s.lastName}"\n`;
     });
 
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });

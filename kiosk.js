@@ -1,7 +1,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
 import { getAuth, signInWithEmailAndPassword, signOut, setPersistence, browserSessionPersistence } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
 import { getDatabase, ref, onValue, get, set, push, remove, serverTimestamp, runTransaction } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
-import { APP_CONFIG, PASS_TYPES, applyBranding } from "./config.js";
+import { APP_CONFIG, PASS_TYPES, applyBranding, escapeHtml } from "./config.js";
 
 // 1. Initialize Firebase App, Auth, and Database
 const app = initializeApp(APP_CONFIG.firebaseConfig);
@@ -43,7 +43,8 @@ setPersistence(auth, browserSessionPersistence)
     // ==========================================
     // 2. State Variables
     // ==========================================
-    let currentMode = APP_CONFIG.enablePhoneStorage ? 'phone' : APP_CONFIG.enabledPassTypes[0];
+    const attendanceEnabled = !!(APP_CONFIG.attendance && APP_CONFIG.attendance.enabled);
+    let currentMode = attendanceEnabled ? 'attendance' : (APP_CONFIG.enablePhoneStorage ? 'phone' : APP_CONFIG.enabledPassTypes[0]);
     let selectedPocket = null;
     // Declared early, deliberately - a Firebase listener set up later in this
     // file (subscribePocketOccupancy) can fire almost immediately on
@@ -100,11 +101,13 @@ setPersistence(auth, browserSessionPersistence)
     // this is what lets M.O.E. run with no phone tab and a third pass type
     // without touching this file or index.html at all.
     const tabList = [
+      ...(attendanceEnabled ? ['attendance'] : []),
       ...(APP_CONFIG.enablePhoneStorage ? ['phone'] : []),
       ...APP_CONFIG.enabledPassTypes
     ];
 
     const tabConfigs = {
+      ...(attendanceEnabled ? { attendance: { icon: '✅', label: 'Check In / Out', badge: 'Check In / Out Mode Active', title: 'Check In / Out', subtitle: 'Scan/Enter your ID to check in when you arrive, and again to check out when you go home.' } } : {}),
       phone: { icon: '📱', label: 'Phone Storage', badge: 'Phone Storage Mode Active', title: 'Phone Storage', subtitle: 'Scan/Enter your student ID to check your mobile device in/out of a pocket.' }
     };
     APP_CONFIG.enabledPassTypes.forEach(pt => {
@@ -542,6 +545,11 @@ setPersistence(auth, browserSessionPersistence)
         return `${Math.floor(diffMins / 60)}h ${diffMins % 60}m`;
       };
 
+      if (currentMode === 'attendance') {
+        await processAttendance(studentId, studentData, fullName, hasPass, getDuration);
+        return;
+      }
+
       if (currentMode === 'phone') {
         if (hasPhone) {
           // --- PHONE CHECKOUT LOGIC ---
@@ -694,6 +702,106 @@ setPersistence(auth, browserSessionPersistence)
       }
     }
     
+    // ==========================================
+    // ATTENDANCE (Check In / Out) - only reachable in rooms whose config has
+    // attendance.enabled. First scan of the day = check in + pick lunch;
+    // scanning again = check out for the day. Stored at
+    // active_passes/attendance/{studentId}, which the existing database
+    // rules already allow (their $passType wildcard covers it), and logged
+    // to system_logs as type 'AT' (AT-CI-HL, AT-CI-SL, AT-CO).
+    // ==========================================
+    function askLunchChoice(firstName) {
+      return new Promise(resolve => {
+        const opts = APP_CONFIG.attendance.lunchOptions || [];
+        const wrap = document.createElement('div');
+        wrap.id = 'lunch-choice-modal';
+        wrap.className = 'fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-4';
+        wrap.innerHTML = `
+          <div class="bg-white rounded-3xl shadow-2xl p-6 w-full max-w-md text-center">
+            <h2 class="text-2xl font-black text-slate-800 mb-1">Good morning, ${escapeHtml(firstName)}!</h2>
+            <p class="text-sm text-slate-500 mb-5">Tap your lunch for today.</p>
+            <div class="grid gap-3">
+              ${opts.map((o, i) => `<button type="button" data-i="${i}" class="lunch-opt bg-[#0B4F2C] hover:bg-[#07381e] active:scale-[0.97] text-white font-extrabold text-xl py-5 rounded-2xl shadow-md transition">${escapeHtml(o.icon || '')} ${escapeHtml(o.label)}</button>`).join('')}
+            </div>
+            <button type="button" id="lunch-cancel" class="mt-4 text-xs font-bold text-slate-500 underline">Cancel</button>
+          </div>`;
+        document.body.appendChild(wrap);
+
+        let finished = false;
+        const done = (val) => {
+          if (finished) return;
+          finished = true;
+          clearTimeout(timer);
+          wrap.remove();
+          resolve(val);
+        };
+        // Walk away without picking and the screen resets itself, so the
+        // next student never lands on someone else's half-finished check-in.
+        const timer = setTimeout(() => done(null), 20000);
+        wrap.querySelectorAll('.lunch-opt').forEach(b => {
+          b.addEventListener('click', () => done(opts[parseInt(b.dataset.i, 10)]));
+        });
+        wrap.querySelector('#lunch-cancel').addEventListener('click', () => done(null));
+      });
+    }
+
+    async function processAttendance(studentId, studentData, fullName, hasPass, getDuration) {
+      const attRef = ref(db, `active_passes/attendance/${studentId}`);
+      const attSnap = await get(attRef);
+
+      // A record from an EARLIER day means the student never checked out
+      // (forgot, or left early). Close it out automatically and treat this
+      // scan as today's check-in, instead of mistaking it for a checkout.
+      let staleRecord = false;
+      if (attSnap.exists()) {
+        const prevTs = attSnap.val().timestamp;
+        if (prevTs && new Date(prevTs).toDateString() !== new Date().toDateString()) {
+          staleRecord = true;
+          await remove(attRef);
+          await set(push(ref(db, 'system_logs')), {
+            studentId, name: fullName, type: 'AT', details: 'AT-CO (Auto)', timestamp: serverTimestamp(), duration: '--'
+          });
+        }
+      }
+
+      if (attSnap.exists() && !staleRecord) {
+        // --- CHECK OUT FOR THE DAY ---
+        const outPass = APP_CONFIG.enabledPassTypes.find(pt => hasPass[pt]);
+        if (outPass) {
+          showOverlay('ACTION DENIED', `Please return your ${PASS_TYPES[outPass].label.toLowerCase()} before checking out.`, 'error');
+          clearIdField();
+          return;
+        }
+        const prev = attSnap.val();
+        await remove(attRef);
+        await set(push(ref(db, 'system_logs')), {
+          studentId, name: fullName, type: 'AT', details: 'AT-CO', timestamp: serverTimestamp(), duration: getDuration(prev.timestamp)
+        });
+        showOverlay('SEE YOU TOMORROW', `${studentData.firstName} checked out for the day`, 'success');
+        clearIdField();
+        return;
+      }
+
+      // --- CHECK IN: ask for the lunch choice first ---
+      clearIdField();
+      const choice = await askLunchChoice(studentData.firstName);
+      if (!choice) {
+        refocusScannerCatcher();
+        return;
+      }
+      await set(attRef, {
+        studentName: fullName,
+        timestamp: serverTimestamp(),
+        lunch: choice.label,
+        lunchCode: choice.code,
+        ...(studentData.group ? { group: studentData.group } : {})
+      });
+      await set(push(ref(db, 'system_logs')), {
+        studentId, name: fullName, type: 'AT', details: `AT-CI-${choice.code}`, timestamp: serverTimestamp(), duration: '--'
+      });
+      showOverlay('GOOD MORNING', `${studentData.firstName} checked in - ${choice.label}`, 'success');
+    }
+
     // 8. Guest & Unrecognized Handlers
     function handleUnrecognized(studentId) {
       unrecognizedAttempts[studentId] = (unrecognizedAttempts[studentId] || 0) + 1;

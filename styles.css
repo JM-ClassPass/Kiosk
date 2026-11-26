@@ -450,3 +450,43 @@ body{margin:0;line-height:inherit;}
 html, body {
   touch-action: manipulation;
 }
+
+/* ==========================================================================
+   ELEMENTARY ADDITIONS (Check In / Out, Attendance card, roster groups)
+   Purely additive. Nothing above is changed, and rooms that don't enable
+   attendance or rosterGroups never render any element that uses these.
+   ========================================================================== */
+.z-\[60\]{z-index:60;}
+.mb-5{margin-bottom:1.25rem;}
+.py-5{padding-top:1.25rem;padding-bottom:1.25rem;}
+.underline{text-decoration-line:underline;}
+.active\:scale-\[0\.97\]:active{transform:scale(0.97);}
+
+/* Attendance card (teacher dashboard) */
+.att-card-top{border-top-color:#059669;}
+.att-count-pill{background:#ecfdf5;color:#047857;font-size:.75rem;font-weight:700;padding:.125rem .5rem;border-radius:.375rem;border:1px solid #d1fae5;}
+.att-tally{font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.05em;}
+.att-tally-num{color:#1e293b;}
+.att-select,.rg-select{font-size:.7rem;font-weight:700;border:1px solid #e2e8f0;border-radius:.5rem;padding:.3rem .5rem;background:#f8fafc;color:#475569;}
+.att-detail{flex-grow:1;display:flex;flex-direction:column;align-items:flex-start;gap:.25rem;font-size:.75rem;color:#94a3b8;font-style:italic;padding-top:.25rem;max-height:16rem;overflow-y:auto;}
+.att-detail-filled{font-style:normal;color:#334155;}
+.att-footer{display:flex;align-items:center;justify-content:space-between;gap:.5rem;margin-top:.5rem;}
+.att-stale-note{font-size:10px;font-weight:700;color:#b45309;}
+.att-clear-all{font-size:10px;font-weight:700;color:#64748b;text-decoration:underline;background:none;cursor:pointer;margin-left:auto;}
+.att-clear-all:hover{color:#e11d48;}
+.att-row{width:100%;display:flex;align-items:center;justify-content:space-between;gap:.375rem;background:#f8fafc;border-radius:.375rem;padding:.25rem .5rem;}
+.att-name{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.att-meta{display:flex;align-items:center;gap:.25rem;flex-shrink:0;}
+.att-group-badge{font-size:9px;background:#e2e8f0;color:#475569;font-weight:900;padding:.125rem .375rem;border-radius:.25rem;text-transform:uppercase;}
+.att-lunch-badge{font-size:10px;font-weight:900;background:#d1fae5;color:#065f46;padding:.125rem .375rem;border-radius:.25rem;}
+.att-time{font-size:10px;color:#94a3b8;font-family:ui-monospace,monospace;}
+.att-x{color:#fb7185;font-weight:900;padding:0 .25rem;background:none;cursor:pointer;}
+.att-x:hover{color:#e11d48;}
+
+/* Roster groups (roster page) */
+.rg-select-full{width:100%;padding:.55rem .75rem;border-radius:.75rem;border-color:#cbd5e1;background:#fff;}
+.rg-bulk{display:flex;align-items:center;gap:.375rem;}
+.rg-bulk.hidden{display:none;}
+.rg-bulk-btn{background:#0B4F2C;color:#fff;font-size:.75rem;font-weight:700;padding:.5rem .75rem;border-radius:.75rem;cursor:pointer;}
+.rg-bulk-btn:hover{background:#07381e;}
+.rg-badge{font-size:10px;background:#e2e8f0;color:#475569;font-weight:900;padding:.125rem .5rem;border-radius:.25rem;text-transform:uppercase;}
