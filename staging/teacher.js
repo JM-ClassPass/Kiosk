@@ -248,16 +248,36 @@ window.attendanceCheckOut = async (id) => {
             studentId: id, name: a.studentName || id, type: 'AT', details: 'AT-CO (Staff)', timestamp: now, duration: formatDuration(now - (a.timestamp || now))
         });
         await remove(ref(db, `active_passes/attendance/${id}`));
+        await clearStudentPasses([id], now);
     } catch (err) {
         console.error("Attendance check-out error:", err);
         alert("Couldn't check that student out: " + err.message);
     }
 };
 
+// Logs a return and removes any open passes (bathroom/hall) so a student who is
+// checked out for the day doesn't stay listed as "out" on a pass.
+async function clearStudentPasses(studentIds, now) {
+    for (const pt of APP_CONFIG.enabledPassTypes) {
+        const meta = PASS_TYPES[pt];
+        for (const id of studentIds) {
+            const pass = (passesData[pt] || {})[id];
+            if (!pass) continue;
+            await push(ref(db, 'system_logs'), {
+                studentId: id, name: pass.studentName || id, type: meta.logCode, details: `${meta.logCode}-I`, timestamp: now, duration: formatDuration(now - (pass.timestamp || now))
+            });
+            await remove(ref(db, `active_passes/${pt}/${id}`));
+        }
+    }
+}
+
 window.attendanceCheckOutAll = async () => {
     const ids = Object.keys(attendanceData);
-    if (ids.length === 0) return;
-    if (!confirm(`Check out all ${ids.length} students for the day?`)) return;
+    const passIds = new Set();
+    APP_CONFIG.enabledPassTypes.forEach(pt => Object.keys(passesData[pt] || {}).forEach(id => passIds.add(id)));
+    if (ids.length === 0 && passIds.size === 0) return;
+    const passNote = passIds.size ? ` and bring back ${passIds.size} on a bathroom/hall pass` : '';
+    if (!confirm(`Check out all ${ids.length} students for the day${passNote}?`)) return;
     const now = Date.now();
     try {
         for (const id of ids) {
@@ -267,6 +287,7 @@ window.attendanceCheckOutAll = async () => {
             });
         }
         await remove(ref(db, 'active_passes/attendance'));
+        await clearStudentPasses([...passIds], now);
     } catch (err) {
         console.error("Attendance check-out-all error:", err);
         alert("Couldn't check everyone out: " + err.message);
