@@ -154,9 +154,113 @@ if (logoutBtn) {
 let phonesData = {};
 let passesData = {}; // { bathroom: {studentId: {...}}, hall: {...}, ... } - one key per APP_CONFIG.enabledPassTypes
 let pendingApprovalsData = {};
+let attendanceData = {}; // { studentId: { studentName, lunch, lunchCode, group, timestamp } } - only used when the room has attendance enabled
+let attendanceGroupFilter = '';
 let logsData = {};
 let rosterData = {}; // for the Manual Pass Override search — not currently rendered as a full roster view here, just used for name lookups
 let currentSort = 'last';
+
+// ==========================================
+// ATTENDANCE CARD (rooms with attendance.enabled in config.js only)
+// Shows who has checked in today, their lunch choice, and their roster
+// group. Data lives at active_passes/attendance/{studentId}, written by the
+// kiosk's Check In / Out tab. Rooms without attendance never build this.
+// ==========================================
+const attendanceOn = !!(APP_CONFIG.attendance && APP_CONFIG.attendance.enabled);
+
+function buildAttendanceCardHtml() {
+    if (!attendanceOn) return '';
+    const groups = APP_CONFIG.rosterGroups || [];
+    const groupFilterHtml = groups.length
+        ? `<select id="attendance-group-filter" class="att-select"><option value="">All groups</option>${groups.map(g => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('')}</select>`
+        : '';
+    return `
+        <div class="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm border-t-4 att-card-top flex flex-col min-h-[100px]">
+            <div class="flex justify-between items-center mb-1.5">
+                <h3 class="font-bold text-base flex items-center gap-1.5"><span>✅</span> Attendance</h3>
+                <span id="dash-attendance-count" class="att-count-pill">0 Here</span>
+            </div>
+            <div class="flex justify-between items-center mb-1.5 bg-slate-50 rounded-lg px-2 py-1 gap-2">
+                <div id="attendance-lunch-tally" class="att-tally"></div>
+                ${groupFilterHtml}
+            </div>
+            <div id="attendance-detail" class="att-detail">No students checked in.</div>
+            <button type="button" id="attendance-clear-all" class="att-clear-all">Check out all</button>
+        </div>
+    `;
+}
+
+function renderAttendance() {
+    const detail = document.getElementById('attendance-detail');
+    const countEl = document.getElementById('dash-attendance-count');
+    const tallyEl = document.getElementById('attendance-lunch-tally');
+    if (!detail || !countEl || !tallyEl) return;
+
+    const all = Object.entries(attendanceData).map(([id, a]) => ({ id, ...a }));
+    const shown = attendanceGroupFilter ? all.filter(a => (a.group || '') === attendanceGroupFilter) : all;
+    shown.sort((x, y) => (x.studentName || '').localeCompare(y.studentName || ''));
+
+    const opts = (APP_CONFIG.attendance && APP_CONFIG.attendance.lunchOptions) || [];
+    countEl.textContent = `${shown.length} Here`;
+    tallyEl.innerHTML = opts.map(o => `${escapeHtml(o.icon || '')} ${escapeHtml(o.label)}: <span class="att-tally-num">${shown.filter(a => a.lunchCode === o.code).length}</span>`).join(' &nbsp;&middot;&nbsp; ');
+
+    if (shown.length === 0) {
+        detail.className = 'att-detail';
+        detail.innerHTML = 'No students checked in.';
+        return;
+    }
+    detail.className = 'att-detail att-detail-filled';
+    detail.innerHTML = shown.map(a => {
+        const time = a.timestamp ? new Date(a.timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+        const opt = opts.find(o => o.code === a.lunchCode);
+        const safeId = escapeHtml(a.id);
+        return `
+            <div class="att-row">
+                <span class="att-name">${escapeHtml(a.studentName || a.id)}</span>
+                <span class="att-meta">
+                    ${a.group ? `<span class="att-group-badge">${escapeHtml(a.group)}</span>` : ''}
+                    <span class="att-lunch-badge" title="${escapeHtml(a.lunch || '')}">${opt ? escapeHtml(opt.icon || '') : ''} ${escapeHtml(a.lunchCode || '')}</span>
+                    <span class="att-time">${escapeHtml(time)}</span>
+                    <button type="button" onclick="attendanceCheckOut('${safeId}')" class="att-x" title="Check out ${escapeHtml(a.studentName || a.id)}">&times;</button>
+                </span>
+            </div>
+        `;
+    }).join('');
+}
+
+window.attendanceCheckOut = async (id) => {
+    const a = attendanceData[id];
+    if (!a) return;
+    const now = Date.now();
+    try {
+        await push(ref(db, 'system_logs'), {
+            studentId: id, name: a.studentName || id, type: 'AT', details: 'AT-CO (Staff)', timestamp: now, duration: formatDuration(now - (a.timestamp || now))
+        });
+        await remove(ref(db, `active_passes/attendance/${id}`));
+    } catch (err) {
+        console.error("Attendance check-out error:", err);
+        alert("Couldn't check that student out: " + err.message);
+    }
+};
+
+window.attendanceCheckOutAll = async () => {
+    const ids = Object.keys(attendanceData);
+    if (ids.length === 0) return;
+    if (!confirm(`Check out all ${ids.length} students for the day?`)) return;
+    const now = Date.now();
+    try {
+        for (const id of ids) {
+            const a = attendanceData[id];
+            await push(ref(db, 'system_logs'), {
+                studentId: id, name: a.studentName || id, type: 'AT', details: 'AT-CO (Staff)', timestamp: now, duration: formatDuration(now - (a.timestamp || now))
+            });
+        }
+        await remove(ref(db, 'active_passes/attendance'));
+    } catch (err) {
+        console.error("Attendance check-out-all error:", err);
+        alert("Couldn't check everyone out: " + err.message);
+    }
+};
 
 // ==========================================
 // 5. UTILITY FUNCTIONS
@@ -568,6 +672,15 @@ window.handleLogSearch = () => {
 // 7. QUICK ADD FORM LISTENER
 // ==========================================
 const form = document.getElementById('quick-add-form');
+// Rooms that define rosterGroups get a group dropdown on Quick Add.
+let addGroupSelect = null;
+if (form && (APP_CONFIG.rosterGroups || []).length) {
+    addGroupSelect = document.createElement('select');
+    addGroupSelect.id = 'add-student-group';
+    addGroupSelect.className = 'w-full text-xs px-2.5 py-1.5 border border-slate-200 rounded-lg bg-slate-50';
+    addGroupSelect.innerHTML = '<option value="">No group</option>' + APP_CONFIG.rosterGroups.map(g => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('');
+    form.insertBefore(addGroupSelect, document.getElementById('add-btn'));
+}
 if (form) {
     form.addEventListener('submit', (e) => {
         e.preventDefault();
@@ -590,7 +703,8 @@ if (form) {
 
         set(ref(db, 'classroom_roster/' + studentId), {
             firstName: firstName,
-            lastName: lastName
+            lastName: lastName,
+            ...(addGroupSelect && addGroupSelect.value ? { group: addGroupSelect.value } : {})
         })
         .then(() => {
             btn.textContent = "✓ Added!";
@@ -621,7 +735,7 @@ if (form) {
 // just by being listed in config — no HTML or JS changes needed here.
 const passCardsContainer = document.getElementById('pass-cards-container');
 if (passCardsContainer) {
-    passCardsContainer.innerHTML = APP_CONFIG.enabledPassTypes.map(pt => {
+    passCardsContainer.innerHTML = buildAttendanceCardHtml() + APP_CONFIG.enabledPassTypes.map(pt => {
         const meta = PASS_TYPES[pt];
         return `
             <div class="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm border-t-4 border-t-${meta.color}-600 flex flex-col min-h-[100px]">
@@ -641,6 +755,22 @@ if (passCardsContainer) {
             </div>
         `;
     }).join('');
+}
+
+if (attendanceOn) {
+    onValue(ref(db, 'active_passes/attendance'), s => {
+        attendanceData = s.val() || {};
+        renderAttendance();
+    });
+    const attGroupFilter = document.getElementById('attendance-group-filter');
+    if (attGroupFilter) {
+        attGroupFilter.addEventListener('change', () => {
+            attendanceGroupFilter = attGroupFilter.value;
+            renderAttendance();
+        });
+    }
+    const attClearAll = document.getElementById('attendance-clear-all');
+    if (attClearAll) attClearAll.addEventListener('click', () => window.attendanceCheckOutAll());
 }
 
 onValue(ref(db, 'active_phones_in_class'), s => {
@@ -740,6 +870,10 @@ function updateStatsOverview() {
             const details = (item.details || '').toUpperCase();
 
             if (type === 'PHONE' && (details.includes('CI-') || details.includes('COS') || details.includes('COT') || details.includes('COA') || details.includes('COED'))) {
+                checkinCount++;
+            }
+
+            if (type === 'AT' && details.startsWith('AT-CI')) {
                 checkinCount++;
             }
 
@@ -956,7 +1090,10 @@ function renderLogs(data) {
             return actionType === code || detailsCode.startsWith(code);
         });
 
-        if (matchedPassType) {
+        if (actionType === 'AT' || detailsCode.startsWith('AT-')) {
+            actionType = 'AT';
+            badgeClass = 'bg-emerald-100 text-emerald-800 border-emerald-300';
+        } else if (matchedPassType) {
             const meta = PASS_TYPES[matchedPassType];
             actionType = meta.logCode;
             badgeClass = `bg-${meta.color}-100 text-${meta.color}-800 border-${meta.color}-300`;

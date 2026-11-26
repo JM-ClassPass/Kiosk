@@ -159,7 +159,34 @@ const ROOMS = {
     logoUrl: "", // M.O.E.'s own logo, once you have one to use
     department: "Room 211",
     enablePhoneStorage: false, // no phone check-in at the elementary level
-    enabledPassTypes: ["bathroom", "hall", "goatroom"],
+    enabledPassTypes: ["bathroom", "hall"], // Goat Room folded into Hall Pass at the teacher's request (Nov 2026)
+
+    // ---- Elementary-only options -------------------------------------
+    // Everything below is OPTIONAL. A room that doesn't list these keys
+    // behaves exactly as it always has (Chelan HS rooms don't list any).
+    //
+    // passOverrides: per-room tweaks to a PASS_TYPES entry. Here the
+    // bathroom pass has no cap, so any number of students can be out at
+    // once (the shared default is 1 at a time).
+    passOverrides: {
+      bathroom: { maxConcurrent: null }
+    },
+    // attendance: adds a "Check In / Out" tab to the kiosk and an
+    // Attendance card to the teacher dashboard. A student checking IN picks
+    // one of the lunchOptions; checking OUT ends their day. Stored under
+    // active_passes/attendance, which the existing database rules already
+    // cover through their $passType wildcard (no rules change needed).
+    attendance: {
+      enabled: true,
+      lunchOptions: [
+        { label: "Home Lunch",   code: "HL", icon: "🏠" },
+        { label: "School Lunch", code: "SL", icon: "🍽️" }
+      ]
+    },
+    // rosterGroups: lets the roster tag each student with a group (e.g. her
+    // two class blocks). Shows a Group column/filter on the roster page and
+    // a group badge + filter on the dashboard's Attendance card.
+    rosterGroups: ["Group 1", "Group 2"],
     kioskAuth: {
       email: "classpass@jdoggg.com",
       password: "ClassPass2026!"
@@ -214,6 +241,16 @@ if (!roomConfig) {
   throw new Error(`Unknown room "${requestedRoom}" — check ROOMS in config.js`);
 }
 
+// Per-room pass tweaks (see passOverrides in a room's config above). This
+// page only ever loads ONE room, so adjusting the shared PASS_TYPES objects
+// in place is safe, and it means kiosk.js/teacher.js pick the changes up
+// without any code of their own. Rooms with no passOverrides skip this.
+if (roomConfig.passOverrides) {
+  for (const [passType, overrides] of Object.entries(roomConfig.passOverrides)) {
+    if (PASS_TYPES[passType]) Object.assign(PASS_TYPES[passType], overrides);
+  }
+}
+
 export const APP_CONFIG = {
   version: "***v3.1.2***",
   ...roomConfig
@@ -224,6 +261,11 @@ export const APP_CONFIG = {
 // pointed at the SAME room when switching between dashboard/roster/kiosk —
 // otherwise clicking between them silently drops back to the default room.
 APP_CONFIG.roomKey = requestedRoom;
+
+// Safe defaults for the optional elementary features, so every page can read
+// these without checking whether the room defined them.
+APP_CONFIG.attendance = APP_CONFIG.attendance || { enabled: false, lunchOptions: [] };
+APP_CONFIG.rosterGroups = APP_CONFIG.rosterGroups || [];
 
 // Total selectable pockets — always derived from pocketLayout above, so this
 // number can never drift out of sync with the grid the way it did before
