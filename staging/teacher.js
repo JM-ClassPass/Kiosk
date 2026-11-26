@@ -185,7 +185,10 @@ function buildAttendanceCardHtml() {
                 ${groupFilterHtml}
             </div>
             <div id="attendance-detail" class="att-detail">No students checked in.</div>
-            <button type="button" id="attendance-clear-all" class="att-clear-all">Check out all</button>
+            <div class="att-footer">
+                <span id="attendance-stale-note" class="att-stale-note"></span>
+                <button type="button" id="attendance-clear-all" class="att-clear-all">Check out all</button>
+            </div>
         </div>
     `;
 }
@@ -196,7 +199,15 @@ function renderAttendance() {
     const tallyEl = document.getElementById('attendance-lunch-tally');
     if (!detail || !countEl || !tallyEl) return;
 
-    const all = Object.entries(attendanceData).map(([id, a]) => ({ id, ...a }));
+    // Only today's check-ins count as "here". Anything left over from an
+    // earlier day (a student who never checked out) is set aside and noted
+    // below the list; "Check out all" clears those too.
+    const todayStr = new Date().toDateString();
+    const everyone = Object.entries(attendanceData).map(([id, a]) => ({ id, ...a }));
+    const all = everyone.filter(a => a.timestamp && new Date(a.timestamp).toDateString() === todayStr);
+    const staleCount = everyone.length - all.length;
+    const staleNote = document.getElementById('attendance-stale-note');
+    if (staleNote) staleNote.textContent = staleCount ? `${staleCount} left over from an earlier day` : '';
     const shown = attendanceGroupFilter ? all.filter(a => (a.group || '') === attendanceGroupFilter) : all;
     shown.sort((x, y) => (x.studentName || '').localeCompare(y.studentName || ''));
 

@@ -749,7 +749,22 @@ setPersistence(auth, browserSessionPersistence)
       const attRef = ref(db, `active_passes/attendance/${studentId}`);
       const attSnap = await get(attRef);
 
+      // A record from an EARLIER day means the student never checked out
+      // (forgot, or left early). Close it out automatically and treat this
+      // scan as today's check-in, instead of mistaking it for a checkout.
+      let staleRecord = false;
       if (attSnap.exists()) {
+        const prevTs = attSnap.val().timestamp;
+        if (prevTs && new Date(prevTs).toDateString() !== new Date().toDateString()) {
+          staleRecord = true;
+          await remove(attRef);
+          await set(push(ref(db, 'system_logs')), {
+            studentId, name: fullName, type: 'AT', details: 'AT-CO (Auto)', timestamp: serverTimestamp(), duration: '--'
+          });
+        }
+      }
+
+      if (attSnap.exists() && !staleRecord) {
         // --- CHECK OUT FOR THE DAY ---
         const outPass = APP_CONFIG.enabledPassTypes.find(pt => hasPass[pt]);
         if (outPass) {

@@ -470,7 +470,9 @@ html, body {
 .att-select,.rg-select{font-size:.7rem;font-weight:700;border:1px solid #e2e8f0;border-radius:.5rem;padding:.3rem .5rem;background:#f8fafc;color:#475569;}
 .att-detail{flex-grow:1;display:flex;flex-direction:column;align-items:flex-start;gap:.25rem;font-size:.75rem;color:#94a3b8;font-style:italic;padding-top:.25rem;max-height:16rem;overflow-y:auto;}
 .att-detail-filled{font-style:normal;color:#334155;}
-.att-clear-all{margin-top:.5rem;align-self:flex-end;font-size:10px;font-weight:700;color:#64748b;text-decoration:underline;background:none;cursor:pointer;}
+.att-footer{display:flex;align-items:center;justify-content:space-between;gap:.5rem;margin-top:.5rem;}
+.att-stale-note{font-size:10px;font-weight:700;color:#b45309;}
+.att-clear-all{font-size:10px;font-weight:700;color:#64748b;text-decoration:underline;background:none;cursor:pointer;margin-left:auto;}
 .att-clear-all:hover{color:#e11d48;}
 .att-row{width:100%;display:flex;align-items:center;justify-content:space-between;gap:.375rem;background:#f8fafc;border-radius:.375rem;padding:.25rem .5rem;}
 .att-name{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
