@@ -247,6 +247,16 @@ setPersistence(auth, browserSessionPersistence)
         }
         pocketGrid.appendChild(btn);
       }
+      // The grid was just rebuilt from scratch, which wipes the "selected"
+      // highlight. If the student already has a pocket picked and it's
+      // still free, put the highlight back so it never looks deselected
+      // after another kiosk's activity triggers a rebuild.
+      if (selectedPocket !== null && !occupiedPockets.includes(selectedPocket.toString().padStart(2, '0'))) {
+        const keepBtn = document.getElementById(`pocket-btn-${parseInt(selectedPocket, 10)}`);
+        if (keepBtn) {
+          keepBtn.className = 'bg-[#0B4F2C] text-white border-[#0B4F2C] font-bold py-2 rounded-lg transform scale-105 shadow-md transition text-xs';
+        }
+      }
     }
 
     function setPocketActive(num) {
